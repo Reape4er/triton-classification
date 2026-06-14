@@ -1,0 +1,17 @@
+# Глобальные настройки
+global:
+  scrape_interval: 15s      # Как часто собирать метрики
+  evaluation_interval: 15s  # Как часто вычислять правила
+
+# Источники метрик
+scrape_configs:
+  # Метрики самого Prometheus
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Метрики Triton Server
+  - job_name: 'triton'
+    scrape_interval: 5s  # Чаще для ML-метрик
+    static_configs:
+      - targets: ['triton:8002']  # Порт метрик Triton

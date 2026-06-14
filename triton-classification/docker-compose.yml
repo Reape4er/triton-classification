@@ -1,0 +1,127 @@
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # TRITON INFERENCE SERVER
+  # Сервер для исполнения ML моделей
+  # ═══════════════════════════════════════════════════════════════
+  triton:
+    # Официальный образ NVIDIA Triton
+    image: nvcr.io/nvidia/tritonserver:24.01-py3
+    container_name: triton-server
+    ports:
+      - "8000:8000"  # HTTP API
+      - "8001:8001"  # gRPC API (используем для FastAPI)
+      - "8002:8002"  # Метрики Prometheus
+    volumes:
+      # Монтируем папку с моделью (только чтение)
+      - ./model_repository:/models:ro
+    command: >
+      tritonserver
+      --model-repository=/models
+      --strict-model-config=false
+      --log-verbose=1
+      --allow-metrics=true
+      --metrics-config=histogram_latencies=true
+    # Проверка здоровья — Docker будет следить что сервер работает
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - ml-network
+    restart: unless-stopped
+    # Раскомментируйте код ниже, если доступна NVIDIA GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ═══════════════════════════════════════════════════════════════
+  # FASTAPI GATEWAY
+  # REST API для клиентов
+  # ═══════════════════════════════════════════════════════════════
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: fastapi-gateway
+    ports:
+      - "8080:8080"  # Порт API
+    environment:
+      # Переменные окружения передаются в main.py
+      - TRITON_URL=triton:8001
+      - MODEL_NAME=image_classifier
+    volumes:
+      # Монтируем модели чтобы API имел доступ к scaler.pkl
+      - ./model_repository:/models:ro
+    depends_on:
+      triton:
+        # Ждём пока Triton станет healthy (пройдёт healthcheck)
+        condition: service_healthy
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # PROMETHEUS
+  # Сбор метрик для мониторинга
+  # ═══════════════════════════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"  # Web UI Prometheus
+    volumes:
+      # Конфигурация Prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Данные метрик (сохраняются между перезапусками)
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # GRAFANA
+  # Визуализация метрик
+  # ═══════════════════════════════════════════════════════════════
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"  # Web UI Grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      # Данные Grafana
+      - grafana-data:/var/lib/grafana
+      # Автоматическая настройка datasource
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - ml-network
+    restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════
+# СЕТЬ И ТОМА
+# ═══════════════════════════════════════════════════════════════
+
+# Все контейнеры в одной сети могут обращаться друг к другу по имени
+networks:
+  ml-network:
+    driver: bridge
+
+# Постоянное хранилище данных
+volumes:
+  prometheus-data:
+  grafana-data:
